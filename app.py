@@ -3,149 +3,131 @@ from flask_cors import CORS
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-import io, os, textwrap, json
+import io, os, textwrap
+from forms_data import get_form
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins="*")
 
-BLANK_ADDENDUM = os.path.join(os.path.dirname(__file__), 'addendum_blank.pdf')
+def yp(top, h=792): return h - top
 
-# ── PDF coordinate map for Addendum to REPC (Utah DRE Form) ──────────────────
-# PDF is 612x792 points. y=0 is BOTTOM in PDF coords, so we flip: pdf_y = 792 - top
-def top_to_y(top): return 792 - top
+def draw_field(c, text, x, top, size=9, bold=False, max_w=400):
+    if not text: return
+    font = "Helvetica-Bold" if bold else "Helvetica"
+    c.setFont(font, size)
+    text = str(text).strip()
+    while c.stringWidth(text, font, size) > max_w and len(text) > 2:
+        text = text[:-1]
+    c.drawString(x, yp(top), text)
 
-ADDENDUM_FIELDS = {
-    'addendum_no':    {'x': 348, 'y': top_to_y(78),  'size': 11, 'bold': True},
-    'offer_date':     {'x': 36,  'y': top_to_y(132),  'size': 9},
-    'buyer':          {'x': 36,  'y': top_to_y(138),  'size': 9, 'max_width': 200},
-    'seller':         {'x': 300, 'y': top_to_y(138),  'size': 9, 'max_width': 230},
-    'property':       {'x': 155, 'y': top_to_y(156),  'size': 8, 'max_width': 160},
-    'response_party': {'x': 37,  'y': top_to_y(509),  'size': 9},
-    'response_date':  {'x': 370, 'y': top_to_y(509),  'size': 9},
-    'response_time':  {'x': 180, 'y': top_to_y(509),  'size': 9},
-}
+def draw_wrapped(c, text, x, top, width, size=10, line_h=13, max_top=475):
+    if not text: return
+    c.setFont("Helvetica", size)
+    chars = int(width / (size * 0.55))
+    cur_y = yp(top)
+    min_y = yp(max_top)
+    for para in str(text).split('\n'):
+        for line in (textwrap.wrap(para, chars) if para.strip() else ['']):
+            if cur_y < min_y: return
+            c.drawString(x, cur_y, line)
+            cur_y -= line_h
+        cur_y -= 4
 
-# Terms body area: x=36, top=162 to top=478 (large blank space)
-TERMS_AREA = {'x': 36, 'y_start': top_to_y(165), 'width': 540, 'line_height': 13, 'size': 10}
-
+def merge_overlay(base_bytes, overlay_bytes):
+    overlay_pdf = PdfReader(overlay_bytes)
+    base_pdf = PdfReader(base_bytes)
+    writer = PdfWriter()
+    for i, page in enumerate(base_pdf.pages):
+        if i == 0:
+            page.merge_page(overlay_pdf.pages[0])
+        writer.add_page(page)
+    out = io.BytesIO()
+    writer.write(out)
+    out.seek(0)
+    return out
 
 def fill_addendum(data):
-    """Fill the blank Addendum PDF with provided data. Returns bytes."""
-    # Create overlay with filled text
-    packet = io.BytesIO()
-    c = canvas.Canvas(packet, pagesize=letter)
-    c.setFont("Helvetica", 10)
+    p = io.BytesIO()
+    c = canvas.Canvas(p, pagesize=letter)
+    draw_field(c, data.get('addendum_no','1'),        348, 78,  size=11, bold=True)
+    draw_field(c, data.get('offer_date',''),           36,  132, size=9)
+    draw_field(c, data.get('buyer',''),                36,  138, size=9, max_w=200)
+    draw_field(c, data.get('seller',''),               300, 138, size=9, max_w=230)
+    draw_field(c, data.get('property',''),             155, 156, size=8, max_w=160)
+    draw_wrapped(c, data.get('terms',''),              36,  165, 540)
+    draw_field(c, data.get('response_party',''),       37,  509, size=9)
+    draw_field(c, data.get('response_time','5:00 PM'), 180, 509, size=9)
+    draw_field(c, data.get('response_date',''),        370, 509, size=9)
+    c.save(); p.seek(0)
+    return merge_overlay(get_form('addendum'), p)
 
-    # Fill named fields
-    for field, cfg in ADDENDUM_FIELDS.items():
-        val = str(data.get(field, '')).strip()
-        if not val:
-            continue
-        size = cfg.get('size', 9)
-        bold = cfg.get('bold', False)
-        font = "Helvetica-Bold" if bold else "Helvetica"
-        c.setFont(font, size)
-        max_width = cfg.get('max_width', 400)
-        # Truncate if too long for single line
-        while c.stringWidth(val, font, size) > max_width and len(val) > 3:
-            val = val[:-1]
-        c.drawString(cfg['x'], cfg['y'], val)
+def fill_buyer_broker(data):
+    p = io.BytesIO()
+    c = canvas.Canvas(p, pagesize=letter)
+    draw_field(c, data.get('company',''),        36,  110, size=9, max_w=200)
+    draw_field(c, data.get('agent',''),          250, 110, size=9, max_w=200)
+    draw_field(c, data.get('buyer',''),          36,  120, size=9, max_w=400)
+    draw_field(c, data.get('end_date',''),       36,  165, size=9, max_w=300)
+    draw_field(c, data.get('counties',''),       36,  185, size=9, max_w=400)
+    draw_field(c, data.get('commission_pct',''), 36,  310, size=9)
+    c.save(); p.seek(0)
+    return merge_overlay(get_form('buyer_broker'), p)
 
-    # Fill terms (multi-line wrap)
-    terms = str(data.get('terms', '')).strip()
-    if terms:
-        c.setFont("Helvetica", TERMS_AREA['size'])
-        # Wrap text to fit width
-        avg_char_width = TERMS_AREA['size'] * 0.55
-        chars_per_line = int(TERMS_AREA['width'] / avg_char_width)
-        lines = []
-        for para in terms.split('\n'):
-            if para.strip():
-                wrapped = textwrap.wrap(para, width=chars_per_line)
-                lines.extend(wrapped)
-                lines.append('')  # paragraph break
-            else:
-                lines.append('')
+def fill_listing_agreement(data):
+    p = io.BytesIO()
+    c = canvas.Canvas(p, pagesize=letter)
+    draw_field(c, data.get('company',''),        36,  110, size=9, max_w=200)
+    draw_field(c, data.get('agent',''),          250, 110, size=9, max_w=200)
+    draw_field(c, data.get('seller',''),         36,  120, size=9, max_w=400)
+    draw_field(c, data.get('property',''),       36,  140, size=9, max_w=400)
+    draw_field(c, data.get('listing_end',''),    36,  160, size=9, max_w=300)
+    draw_field(c, data.get('listing_price',''),  36,  295, size=9)
+    draw_field(c, data.get('commission_pct',''), 36,  315, size=9)
+    c.save(); p.seek(0)
+    return merge_overlay(get_form('listing_agreement'), p)
 
-        y = TERMS_AREA['y_start']
-        min_y = top_to_y(475)  # don't go below terms area
-        for line in lines:
-            if y < min_y:
-                break
-            c.drawString(TERMS_AREA['x'], y, line)
-            y -= TERMS_AREA['line_height']
+def fill_wire_fraud(data, form_key):
+    p = io.BytesIO()
+    c = canvas.Canvas(p, pagesize=letter)
+    draw_field(c, data.get('company',''), 36, 95,  size=9, max_w=200)
+    draw_field(c, data.get('agent',''),   36, 105, size=9, max_w=200)
+    client = data.get('buyer','') if form_key == 'wire_fraud_buyer' else data.get('seller','')
+    draw_field(c, client, 36, 115, size=9, max_w=400)
+    c.save(); p.seek(0)
+    return merge_overlay(get_form(form_key), p)
 
-    c.save()
-    packet.seek(0)
-
-    # Merge overlay onto blank PDF
-    overlay = PdfReader(packet)
-    base = PdfReader(BLANK_ADDENDUM)
-    writer = PdfWriter()
-    page = base.pages[0]
-    page.merge_page(overlay.pages[0])
-    writer.add_page(page)
-
-    output = io.BytesIO()
-    writer.write(output)
-    output.seek(0)
-    return output
-
+def fill_seller_disclosure(data):
+    p = io.BytesIO()
+    c = canvas.Canvas(p, pagesize=letter)
+    draw_field(c, data.get('seller',''),  200, 65, size=9, max_w=300)
+    draw_field(c, data.get('agent',''),   36,  78, size=9, max_w=200)
+    draw_field(c, data.get('company',''), 250, 78, size=9, max_w=200)
+    c.save(); p.seek(0)
+    return merge_overlay(get_form('seller_disclosure'), p)
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok', 'service': 'TC PDF API'})
+    return jsonify({'status':'ok','forms':['addendum','repc','buyer_broker','listing_agreement','wire_fraud_buyer','wire_fraud_seller','seller_disclosure']})
 
-
-@app.route('/fill-addendum', methods=['POST', 'OPTIONS'])
-def fill_addendum_endpoint():
-    if request.method == 'OPTIONS':
-        return '', 204
+@app.route('/fill/<form_key>', methods=['POST','OPTIONS'])
+def fill_form(form_key):
+    if request.method == 'OPTIONS': return '',204
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No data provided'}), 400
-
-        # Required fields check
-        addendum_no = data.get('addendum_no', '1')
-        buyer = data.get('buyer', '')
-        seller = data.get('seller', '')
-        property_addr = data.get('property', '')
-        terms = data.get('terms', '')
-        offer_date = data.get('offer_date', '')
-        response_date = data.get('response_date', '')
-        response_time = data.get('response_time', '5:00 PM')
-        response_party = data.get('response_party', '')
-
-        fill_data = {
-            'addendum_no': addendum_no,
-            'buyer': buyer,
-            'seller': seller,
-            'property': property_addr,
-            'terms': terms,
-            'offer_date': offer_date,
-            'response_date': response_date,
-            'response_time': response_time,
-            'response_party': response_party,
-        }
-
-        pdf_bytes = fill_addendum(fill_data)
-
-        filename = f"Addendum_No_{addendum_no}_{property_addr.split(',')[0].replace(' ','_')}.pdf"
-
-        return send_file(
-            pdf_bytes,
-            mimetype='application/pdf',
-            as_attachment=False,
-            download_name=filename
-        )
-
+        data = request.get_json(force=True) or {}
+        fk = form_key.lower().replace('-','_')
+        if fk == 'addendum':              pdf = fill_addendum(data)
+        elif fk == 'buyer_broker':        pdf = fill_buyer_broker(data)
+        elif fk == 'listing_agreement':   pdf = fill_listing_agreement(data)
+        elif fk in ('wire_fraud_buyer','wire_fraud_seller'): pdf = fill_wire_fraud(data, fk)
+        elif fk == 'seller_disclosure':   pdf = fill_seller_disclosure(data)
+        else: return jsonify({'error':f'Unknown form: {fk}'}),400
+        prop = data.get('property','doc').split(',')[0].replace(' ','_')
+        num  = data.get('addendum_no','')
+        name = f"{fk}{'_'+num if num else ''}_{prop}.pdf"
+        return send_file(pdf, mimetype='application/pdf', as_attachment=False, download_name=name)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
+        import traceback
+        return jsonify({'error':str(e),'trace':traceback.format_exc()}),500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)))
