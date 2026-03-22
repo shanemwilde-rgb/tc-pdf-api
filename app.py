@@ -9,29 +9,41 @@ from forms_data import get_form
 app = Flask(__name__)
 CORS(app, origins="*")
 
-def yp(top, h=792): return h - top
+# PDF is 612x792 points. y=0 is BOTTOM, so flip: pdf_y = 792 - top
+def yp(top): return 792 - top
 
-def draw_field(c, text, x, top, size=9, bold=False, max_w=400):
-    if not text: return
+def draw(c, text, x, top, size=9, bold=False, max_w=500):
+    if not str(text).strip(): return
     font = "Helvetica-Bold" if bold else "Helvetica"
     c.setFont(font, size)
-    text = str(text).strip()
-    while c.stringWidth(text, font, size) > max_w and len(text) > 2:
-        text = text[:-1]
-    c.drawString(x, yp(top), text)
+    val = str(text).strip()
+    while c.stringWidth(val, font, size) > max_w and len(val) > 2:
+        val = val[:-1]
+    c.drawString(x, yp(top), val)
 
-def draw_wrapped(c, text, x, top, width, size=10, line_h=13, max_top=475):
-    if not text: return
+def draw_wrapped(c, text, x, top, width=540, size=10, line_h=13, max_top=478):
+    if not str(text).strip(): return
+    # Strip markdown formatting
+    import re
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', str(text))  # **bold**
+    text = re.sub(r'\*(.+?)\*', r'\1', text)            # *italic*
+    text = re.sub(r'#{1,6}\s+', '', text)               # ## headers
+    text = re.sub(r'^[-*]\s+', '', text, flags=re.MULTILINE)  # bullet points
+    text = re.sub(r'_{1,2}(.+?)_{1,2}', r'\1', text)   # __underline__
+    text = text.strip()
+
     c.setFont("Helvetica", size)
-    chars = int(width / (size * 0.55))
+    chars = int(width / (size * 0.52))
     cur_y = yp(top)
     min_y = yp(max_top)
-    for para in str(text).split('\n'):
-        for line in (textwrap.wrap(para, chars) if para.strip() else ['']):
+    for para in text.split('\n'):
+        para = para.strip()
+        lines = textwrap.wrap(para, chars) if para else ['']
+        for line in lines:
             if cur_y < min_y: return
             c.drawString(x, cur_y, line)
             cur_y -= line_h
-        cur_y -= 4
+        cur_y -= 3  # paragraph gap
 
 def merge_overlay(base_bytes, overlay_bytes):
     overlay_pdf = PdfReader(overlay_bytes)
@@ -49,61 +61,91 @@ def merge_overlay(base_bytes, overlay_bytes):
 def fill_addendum(data):
     p = io.BytesIO()
     c = canvas.Canvas(p, pagesize=letter)
-    draw_field(c, data.get('addendum_no','1'),        348, 78,  size=11, bold=True)
-    draw_field(c, data.get('offer_date',''),           36,  132, size=9)
-    draw_field(c, data.get('buyer',''),                36,  138, size=9, max_w=200)
-    draw_field(c, data.get('seller',''),               300, 138, size=9, max_w=230)
-    draw_field(c, data.get('property',''),             155, 156, size=8, max_w=160)
-    draw_wrapped(c, data.get('terms',''),              36,  165, 540)
-    draw_field(c, data.get('response_party',''),       37,  509, size=9)
-    draw_field(c, data.get('response_time','5:00 PM'), 180, 509, size=9)
-    draw_field(c, data.get('response_date',''),        370, 509, size=9)
+
+    # Addendum number — after "NO." in header
+    draw(c, data.get('addendum_no','1'), 348, 70, size=11, bold=True)
+
+    # Offer reference date — line below header row
+    draw(c, data.get('offer_date',''), 36, 124, size=8)
+
+    # Buyer name — "between ______ as Buyer"
+    draw(c, data.get('buyer',''), 36, 138, size=9, max_w=200)
+
+    # Seller name — "and ______ as Seller"
+    draw(c, data.get('seller',''), 300, 138, size=9, max_w=228)
+
+    # Property address — "regarding the Property located at ______"
+    draw(c, data.get('property',''), 155, 149, size=7.5, max_w=160)
+
+    # Addendum terms — large blank body area
+    draw_wrapped(c, data.get('terms',''), 36, 160, width=540, size=10, line_h=13, max_top=478)
+
+    # Responding party — X in Seller or Buyer bracket
+    resp = data.get('response_party','Seller').strip().lower()
+    if resp == 'seller':
+        draw(c, 'X', 38, 504, size=9)   # Seller checkbox
+    else:
+        draw(c, 'X', 79, 504, size=9)   # Buyer checkbox
+
+    # Response time
+    draw(c, data.get('response_time','5:00'), 180, 504, size=9)
+    # PM checkbox
+    draw(c, 'X', 268, 504, size=9)
+
+    # Response deadline date
+    draw(c, data.get('response_date',''), 370, 504, size=9)
+
     c.save(); p.seek(0)
     return merge_overlay(get_form('addendum'), p)
+
 
 def fill_buyer_broker(data):
     p = io.BytesIO()
     c = canvas.Canvas(p, pagesize=letter)
-    draw_field(c, data.get('company',''),        36,  110, size=9, max_w=200)
-    draw_field(c, data.get('agent',''),          250, 110, size=9, max_w=200)
-    draw_field(c, data.get('buyer',''),          36,  120, size=9, max_w=400)
-    draw_field(c, data.get('end_date',''),       36,  165, size=9, max_w=300)
-    draw_field(c, data.get('counties',''),       36,  185, size=9, max_w=400)
-    draw_field(c, data.get('commission_pct',''), 36,  310, size=9)
+    draw(c, data.get('company',''),        106, 110, size=9, max_w=130)
+    draw(c, data.get('agent',''),          260, 110, size=9, max_w=180)
+    draw(c, data.get('buyer',''),          36,  120, size=9, max_w=420)
+    draw(c, data.get('end_date',''),       36,  165, size=9, max_w=320)
+    draw(c, data.get('counties',''),       36,  185, size=9, max_w=420)
+    draw(c, data.get('commission_pct',''), 36,  310, size=9)
     c.save(); p.seek(0)
     return merge_overlay(get_form('buyer_broker'), p)
+
 
 def fill_listing_agreement(data):
     p = io.BytesIO()
     c = canvas.Canvas(p, pagesize=letter)
-    draw_field(c, data.get('company',''),        36,  110, size=9, max_w=200)
-    draw_field(c, data.get('agent',''),          250, 110, size=9, max_w=200)
-    draw_field(c, data.get('seller',''),         36,  120, size=9, max_w=400)
-    draw_field(c, data.get('property',''),       36,  140, size=9, max_w=400)
-    draw_field(c, data.get('listing_end',''),    36,  160, size=9, max_w=300)
-    draw_field(c, data.get('listing_price',''),  36,  295, size=9)
-    draw_field(c, data.get('commission_pct',''), 36,  315, size=9)
+    draw(c, data.get('company',''),        106, 110, size=9, max_w=130)
+    draw(c, data.get('agent',''),          260, 110, size=9, max_w=180)
+    draw(c, data.get('seller',''),         36,  120, size=9, max_w=420)
+    draw(c, data.get('property',''),       36,  140, size=9, max_w=420)
+    draw(c, data.get('listing_end',''),    36,  160, size=9, max_w=320)
+    draw(c, data.get('listing_price',''),  36,  295, size=9)
+    draw(c, data.get('commission_pct',''), 36,  315, size=9)
     c.save(); p.seek(0)
     return merge_overlay(get_form('listing_agreement'), p)
+
 
 def fill_wire_fraud(data, form_key):
     p = io.BytesIO()
     c = canvas.Canvas(p, pagesize=letter)
-    draw_field(c, data.get('company',''), 36, 95,  size=9, max_w=200)
-    draw_field(c, data.get('agent',''),   36, 105, size=9, max_w=200)
+    draw(c, data.get('company',''), 36, 95,  size=9, max_w=200)
+    draw(c, data.get('agent',''),   36, 105, size=9, max_w=200)
     client = data.get('buyer','') if form_key == 'wire_fraud_buyer' else data.get('seller','')
-    draw_field(c, client, 36, 115, size=9, max_w=400)
+    draw(c, client, 36, 115, size=9, max_w=400)
     c.save(); p.seek(0)
     return merge_overlay(get_form(form_key), p)
+
 
 def fill_seller_disclosure(data):
     p = io.BytesIO()
     c = canvas.Canvas(p, pagesize=letter)
-    draw_field(c, data.get('seller',''),  200, 65, size=9, max_w=300)
-    draw_field(c, data.get('agent',''),   36,  78, size=9, max_w=200)
-    draw_field(c, data.get('company',''), 250, 78, size=9, max_w=200)
+    draw(c, data.get('seller',''),  200, 65, size=9, max_w=300)
+    draw(c, data.get('agent',''),   36,  78, size=9, max_w=200)
+    draw(c, data.get('company',''), 250, 78, size=9, max_w=200)
     c.save(); p.seek(0)
     return merge_overlay(get_form('seller_disclosure'), p)
+
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -121,7 +163,8 @@ def fill_form(form_key):
         elif fk in ('wire_fraud_buyer','wire_fraud_seller'): pdf = fill_wire_fraud(data, fk)
         elif fk == 'seller_disclosure':   pdf = fill_seller_disclosure(data)
         else: return jsonify({'error':f'Unknown form: {fk}'}),400
-        prop = data.get('property','doc').split(',')[0].replace(' ','_')
+
+        prop = data.get('property','doc').split(',')[0].replace(' ','_').replace('/','_')
         num  = data.get('addendum_no','')
         name = f"{fk}{'_'+num if num else ''}_{prop}.pdf"
         return send_file(pdf, mimetype='application/pdf', as_attachment=False, download_name=name)
