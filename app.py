@@ -21,16 +21,24 @@ def draw(c, text, x, top, size=9, bold=False, max_w=500):
         val = val[:-1]
     c.drawString(x, yp(top), val)
 
+def clean_terms(text):
+    import re
+    text = str(text).strip()
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'#{1,6}\s+', '', text)
+    text = re.sub(r'_{1,2}(.+?)_{1,2}', r'\1', text)
+    text = re.sub(r'^(Property Address|Buyer.s.|Seller.s.|Offer Reference Date|ADDENDUM NO\.|Address|Buyer|Seller)[:\s].*$', '', text, flags=re.MULTILINE|re.IGNORECASE)
+    text = re.sub(r'^[-_]{2,}\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^ADDENDUM NO\..*$', '', text, flags=re.MULTILINE|re.IGNORECASE)
+    text = re.sub(r'^\d+\.\s+[A-Z ]{4,}$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[-*•]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
 def draw_wrapped(c, text, x, top, width=540, size=10, line_h=13, max_top=478):
     if not str(text).strip(): return
-    # Strip markdown formatting
-    import re
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', str(text))  # **bold**
-    text = re.sub(r'\*(.+?)\*', r'\1', text)            # *italic*
-    text = re.sub(r'#{1,6}\s+', '', text)               # ## headers
-    text = re.sub(r'^[-*]\s+', '', text, flags=re.MULTILINE)  # bullet points
-    text = re.sub(r'_{1,2}(.+?)_{1,2}', r'\1', text)   # __underline__
-    text = text.strip()
+    text = clean_terms(text)
 
     c.setFont("Helvetica", size)
     chars = int(width / (size * 0.52))
